@@ -110,7 +110,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
 }
 
-export function deactivate() {}
+export function deactivate() { }
 
 // ── Generate interface (command palette) ────────────────────────────────────
 
@@ -237,7 +237,12 @@ async function configureMcpCommand(extensionPath: string): Promise<void> {
         },
     };
 
-    fs.writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+    try {
+        fs.writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+    } catch (err) {
+        vscode.window.showErrorMessage(`D365: Failed to write .mcp.json: ${errorMessage(err)}`);
+        return;
+    }
 
     vscode.window.showInformationMessage(
         'D365: Configured .mcp.json for this workspace — restart Claude Code to enable Dataverse schema queries.',
