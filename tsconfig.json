@@ -9,5 +9,13 @@
     "strict": true,
     "skipLibCheck": true
   },
-  "exclude": ["node_modules", ".vscode-test"]
+  "exclude": ["node_modules", ".vscode-test", "test"],
+  "ts-node": {
+    "transpileOnly": true,
+    "compilerOptions": {
+      "module": "commonjs",
+      "rootDir": ".",
+      "types": ["node", "mocha", "sinon"]
+    }
+  }
 }
