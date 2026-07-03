@@ -2,6 +2,21 @@
 
 A VS Code extension for TypeScript development against Dynamics 365 / Dataverse. Browse entities and attributes, generate typed interfaces and `const enum`s for option sets, and get IntelliSense-driven schema generation — all without leaving the editor.
 
+## Table of Contents
+
+- [Features](#features)
+  - [Entity Explorer](#entity-explorer)
+  - [TypeScript Interface Generation](#typescript-interface-generation)
+  - [Enum Generation](#enum-generation)
+  - [IntelliSense Integration](#intellisense-integration)
+  - [Connection Management](#connection-management)
+  - [Browse Entity Fields](#browse-entity-fields)
+  - [Web Resources](#web-resources)
+- [Title Bar Actions](#title-bar-actions)
+- [Extension Settings](#extension-settings)
+- [Claude / AI Integration (MCP Server)](#claude--ai-integration-mcp-server)
+- [Requirements](#requirements)
+
 ## Features
 
 ### Entity Explorer

@@ -2,8 +2,9 @@
   "name": "d365-developer-tools",
   "displayName": "D365 Developer Tools (Unofficial)",
   "description": "TypeScript development tools for Dynamics 365 / Dataverse",
-  "version": "0.0.7",
+  "version": "0.0.9",
   "publisher": "truenorth",
+  "icon": "resources/d365.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/TrueNorthIT/D365-Developer-Tools-Unofficial"
