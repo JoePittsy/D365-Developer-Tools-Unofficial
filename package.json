@@ -231,7 +231,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
-    "test": "vscode-test",
+    "test": "mocha",
     "version:patch": "node scripts/bump-version.mjs patch",
     "version:minor": "node scripts/bump-version.mjs minor",
     "version:major": "node scripts/bump-version.mjs major",
@@ -240,7 +240,9 @@
     "publish:pre-release": "vsce publish --pre-release"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
+    "@types/sinon": "^22.0.0",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
@@ -248,6 +250,9 @@
     "@vscode/test-electron": "^2.4.0",
     "@vscode/vsce": "^2.32.0",
     "eslint": "^9.0.0",
+    "mocha": "^11.7.6",
+    "sinon": "^22.0.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.4.0"
   },
   "dependencies": {
