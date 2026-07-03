@@ -2,6 +2,21 @@
 
 A VS Code extension for TypeScript development against Dynamics 365 / Dataverse. Browse entities and attributes, generate typed interfaces and `const enum`s for option sets, and get IntelliSense-driven schema generation — all without leaving the editor.
 
+## Table of Contents
+
+- [Features](#features)
+  - [Entity Explorer](#entity-explorer)
+  - [TypeScript Interface Generation](#typescript-interface-generation)
+  - [Enum Generation](#enum-generation)
+  - [IntelliSense Integration](#intellisense-integration)
+  - [Connection Management](#connection-management)
+  - [Browse Entity Fields](#browse-entity-fields)
+  - [Web Resources](#web-resources)
+- [Title Bar Actions](#title-bar-actions)
+- [Extension Settings](#extension-settings)
+- [Claude / AI Integration (MCP Server)](#claude--ai-integration-mcp-server)
+- [Requirements](#requirements)
+
 ## Features
 
 ### Entity Explorer
@@ -84,6 +99,7 @@ Both paths fetch option set values automatically and produce `const enum`s along
 - **Connect** — prompts for environment URL and authentication method, then validates connectivity via WhoAmI
 - **Disconnect** — clears the stored session
 - **Auto-restore** — the extension activates in the background when VS Code opens and silently restores the last connection; the sidebar shows a spinner while this is in progress and a reconnect prompt if it fails
+- **Per-workspace** — each workspace maintains its own connection independently; opening multiple workspaces simultaneously connects each to its own environment
 
 Authentication options:
 
@@ -94,9 +110,47 @@ Authentication options:
 
 Client secrets are stored in VS Code's secret storage (OS keychain), never in plain text.
 
+#### Status Bar
+
+A status bar item on the left shows the current connection at a glance — `$(plug) D365: yourorg` when connected, `$(debug-disconnect) D365: Not Connected` otherwise, or a spinner while a saved connection is being restored. Click it to open a menu with:
+
+- **Disconnect** (when connected)
+- **Switch Account…** — re-prompts the Microsoft account picker for the current environment, for user-auth connections
+- **Connect to Environment…** / **Connect to Different Environment…**
+- **Recent Environments** — the last five environments you've connected to, for one-click reconnect without re-entering the URL, tenant, or auth mode
+
+Connecting or switching accounts always shows the Microsoft account picker, even if only one account is signed in — this prevents silently reusing the wrong account when you have more than one D365 tenant. Routine background token refreshes (e.g. while browsing entities) don't force the account picker; if your Microsoft session has expired, VS Code may still prompt you to sign in again.
+
 ### Browse Entity Fields
 
 The **Browse Entity Fields** title bar button (or **D365: Browse Entity Fields** from the palette) opens a searchable quick-pick showing all attributes for any entity — useful for quickly looking up a field name or type without generating any code.
+
+### Web Resources
+
+Publish local files straight to your connected environment as Dataverse web resources — no manual upload through the maker portal.
+
+**Setup**
+
+1. Open the D365 Explorer sidebar and click the `...` (more actions) button in its title bar.
+2. Choose **Configure Web Resources…**.
+3. Pick (or type) the workspace folder that holds your web resource files — the folder icon opens a native browse dialog.
+4. Optionally set a name prefix (e.g. `new_`). A trailing `/` is added automatically if you leave it off, so the resulting Dataverse name looks like `new_/scripts/main.js`.
+
+Local file names map to Dataverse web resource names automatically: `<prefix>/<path relative to the configured folder>`. Supported extensions: `.js`, `.html`/`.htm`, `.css`, `.xml`, `.png`, `.jpg`/`.jpeg`, `.gif`, `.svg`, `.ico`, `.xap`, `.resx`.
+
+**Publishing**
+
+Once connected, publish via any of:
+
+- Right-click a file or folder in Explorer → **Publish Web Resource** (folders publish every supported file underneath them)
+- The cloud-upload icon in the editor title bar, for the file you're currently editing
+- **D365: Publish Web Resources…** from the command palette, or the `...` menu in the D365 Explorer sidebar — opens a multi-select list of every file under your configured folder
+
+If a matching web resource doesn't exist yet, you'll be prompted to create it (display name, type, and optionally a solution to add it to). Existing web resources just have their content updated. Either way, the extension publishes the change immediately afterward, so it goes live without a separate manual publish step.
+
+**Comparing with the server**
+
+Right-click a text-based web resource file (`.js`, `.html`/`.htm`, `.css`, `.xml`, `.resx`, `.svg`) in Explorer, or use the diff icon in the editor title bar, and choose **Compare with Dynamics 365** to open a side-by-side diff of your local file against the content currently published in the environment. Useful for checking what's actually changed before publishing, or spotting drift if someone edited the web resource directly in D365.
 
 ## Title Bar Actions
 
@@ -109,7 +163,11 @@ The sidebar title bar shows context-sensitive actions:
 | `$(refresh)` | Refresh Entities | Connected |
 | `$(list-flat)` | Browse Entity Fields | Connected |
 
+The `...` overflow menu also has **Configure Web Resources…** (always) and **Publish Web Resources…** (when connected).
+
 ## Extension Settings
+
+All settings are resource-scoped (workspace-folder scoped) and can be set in `.vscode/settings.json` to pre-fill connection prompts for that workspace folder.
 
 | Setting | Description | Default |
 |---|---|---|
@@ -117,6 +175,8 @@ The sidebar title bar shows context-sensitive actions:
 | `d365.tenantId` | Azure AD tenant ID. Leave blank to auto-discover from the environment URL | — |
 | `d365.clientId` | Azure AD application (client) ID | — |
 | `d365.authMode` | `user` or `clientCredentials`. Leave blank to be prompted each time | — |
+| `d365.webResources.rootFolder` | Workspace-relative folder that maps to Dataverse web resources | `webresources` |
+| `d365.webResources.namePrefix` | Prefix prepended to a file's relative path to form its web resource name (trailing `/` added automatically) | — |
 
 ## Claude / AI Integration (MCP Server)
 
@@ -134,11 +194,12 @@ The extension ships an MCP (Model Context Protocol) server so Claude can query y
 
 ### Setup
 
-No credentials or manual config needed — the MCP server uses your existing VS Code session.
+No credentials needed — the MCP server uses your existing VS Code session. Configuration is opt-in per workspace.
 
 1. **Connect in the D365 sidebar** — authenticate as normal.
-2. **Restart Claude Code** — on first activation the extension detects Claude Code and writes `.mcp.json` automatically. A notification confirms when this happens.
-3. **Run `/mcp`** in Claude Code to confirm the `d365` server is listed as connected.
+2. **Run `D365: Configure MCP Server for this Workspace`** from the Command Palette. This writes (or merges into) `.mcp.json` in the workspace root, pointing Claude Code at the bundled server. A notification confirms when this happens.
+3. **Restart Claude Code** so it picks up the new `.mcp.json`.
+4. **Run `/mcp`** in Claude Code to confirm the `d365` server is listed as connected.
 
 That's it. The extension starts a local token-vending bridge (`~/.d365-mcp-bridge`) whenever you're connected; the MCP server reads from it so Claude always has a fresh token without storing any credentials.
 

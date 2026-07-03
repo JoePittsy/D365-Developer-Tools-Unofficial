@@ -2,8 +2,9 @@
   "name": "d365-developer-tools",
   "displayName": "D365 Developer Tools (Unofficial)",
   "description": "TypeScript development tools for Dynamics 365 / Dataverse",
-  "version": "0.0.3",
+  "version": "1.0.0",
   "publisher": "truenorth",
+  "icon": "resources/d365.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/TrueNorthIT/D365-Developer-Tools-Unofficial"
@@ -33,6 +34,18 @@
         "icon": "$(debug-disconnect)"
       },
       {
+        "command": "d365.switchAccount",
+        "title": "Switch Account…",
+        "category": "D365",
+        "icon": "$(account)"
+      },
+      {
+        "command": "d365.statusBarMenu",
+        "title": "Show Connection Menu",
+        "category": "D365",
+        "icon": "$(plug)"
+      },
+      {
         "command": "d365.refreshEntities",
         "title": "Refresh Entities",
         "category": "D365",
@@ -49,6 +62,35 @@
         "title": "Generate TypeScript Interface",
         "category": "D365",
         "icon": "$(symbol-interface)"
+      },
+      {
+        "command": "d365.publishWebResource",
+        "title": "Publish Web Resource",
+        "category": "D365",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "d365.publishWebResources",
+        "title": "Publish Web Resources…",
+        "category": "D365",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "d365.configureWebResources",
+        "title": "Configure Web Resources…",
+        "category": "D365",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "d365.compareWebResource",
+        "title": "Compare with Dynamics 365",
+        "category": "D365",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "d365.configureMcp",
+        "title": "Configure MCP Server for this Workspace",
+        "category": "D365"
       }
     ],
     "configuration": {
@@ -57,16 +99,19 @@
         "d365.environmentUrl": {
           "type": "string",
           "default": "",
+          "scope": "resource",
           "description": "Dataverse environment URL (e.g. https://yourorg.crm11.dynamics.com)"
         },
         "d365.tenantId": {
           "type": "string",
           "default": "",
+          "scope": "resource",
           "description": "Azure AD tenant ID. Leave blank to auto-discover from the environment URL."
         },
         "d365.clientId": {
           "type": "string",
           "default": "",
+          "scope": "resource",
           "description": "Azure AD application (client) ID"
         },
         "d365.authMode": {
@@ -80,7 +125,20 @@
             "App-only authentication using a client ID and secret"
           ],
           "default": "",
+          "scope": "resource",
           "description": "Authentication method. Leave blank to be prompted each time."
+        },
+        "d365.webResources.rootFolder": {
+          "type": "string",
+          "default": "webresources",
+          "scope": "resource",
+          "description": "Workspace-relative folder that maps to Dataverse web resources. Files under this folder are published using their path relative to it."
+        },
+        "d365.webResources.namePrefix": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Prefix prepended to a file's relative path to form its Dataverse web resource name, e.g. 'new_' for a name like new_/scripts/main.js. A trailing '/' is added automatically if missing. Leave blank for no prefix."
         }
       }
     },
@@ -103,6 +161,12 @@
       ]
     },
     "menus": {
+      "commandPalette": [
+        {
+          "command": "d365.switchAccount",
+          "when": "d365.connected"
+        }
+      ],
       "view/title": [
         {
           "command": "d365.connect",
@@ -123,6 +187,40 @@
           "command": "d365.browseEntity",
           "when": "view == d365.entityExplorer && d365.connected",
           "group": "navigation@3"
+        },
+        {
+          "command": "d365.configureWebResources",
+          "when": "view == d365.entityExplorer",
+          "group": "1_config"
+        },
+        {
+          "command": "d365.publishWebResources",
+          "when": "view == d365.entityExplorer && d365.connected",
+          "group": "1_config"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "d365.publishWebResource",
+          "when": "d365.connected && (explorerResourceIsFolder || resourceExtname =~ /\\.(js|html|htm|css|xml|png|jpg|jpeg|gif|svg|ico|xap|resx)$/)",
+          "group": "d365@1"
+        },
+        {
+          "command": "d365.compareWebResource",
+          "when": "d365.connected && resourceExtname =~ /\\.(js|html|htm|css|xml|resx|svg)$/",
+          "group": "d365@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "d365.publishWebResource",
+          "when": "d365.connected && resourceExtname =~ /\\.(js|html|htm|css|xml|png|jpg|jpeg|gif|svg|ico|xap|resx)$/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "d365.compareWebResource",
+          "when": "d365.connected && resourceExtname =~ /\\.(js|html|htm|css|xml|resx|svg)$/",
+          "group": "navigation@2"
         }
       ]
     }
@@ -133,7 +231,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
-    "test": "vscode-test",
+    "test": "mocha",
     "version:patch": "node scripts/bump-version.mjs patch",
     "version:minor": "node scripts/bump-version.mjs minor",
     "version:major": "node scripts/bump-version.mjs major",
@@ -142,7 +240,9 @@
     "publish:pre-release": "vsce publish --pre-release"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
+    "@types/sinon": "^22.0.0",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
@@ -150,6 +250,9 @@
     "@vscode/test-electron": "^2.4.0",
     "@vscode/vsce": "^2.32.0",
     "eslint": "^9.0.0",
+    "mocha": "^11.7.6",
+    "sinon": "^22.0.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.4.0"
   },
   "dependencies": {
