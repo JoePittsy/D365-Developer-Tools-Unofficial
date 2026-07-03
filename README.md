@@ -194,11 +194,12 @@ The extension ships an MCP (Model Context Protocol) server so Claude can query y
 
 ### Setup
 
-No credentials or manual config needed — the MCP server uses your existing VS Code session.
+No credentials needed — the MCP server uses your existing VS Code session. Configuration is opt-in per workspace.
 
 1. **Connect in the D365 sidebar** — authenticate as normal.
-2. **Restart Claude Code** — on first activation the extension detects Claude Code and writes `.mcp.json` automatically. A notification confirms when this happens.
-3. **Run `/mcp`** in Claude Code to confirm the `d365` server is listed as connected.
+2. **Run `D365: Configure MCP Server for this Workspace`** from the Command Palette. This writes (or merges into) `.mcp.json` in the workspace root, pointing Claude Code at the bundled server. A notification confirms when this happens.
+3. **Restart Claude Code** so it picks up the new `.mcp.json`.
+4. **Run `/mcp`** in Claude Code to confirm the `d365` server is listed as connected.
 
 That's it. The extension starts a local token-vending bridge (`~/.d365-mcp-bridge`) whenever you're connected; the MCP server reads from it so Claude always has a fresh token without storing any credentials.
 

@@ -86,6 +86,11 @@
         "title": "Compare with Dynamics 365",
         "category": "D365",
         "icon": "$(diff)"
+      },
+      {
+        "command": "d365.configureMcp",
+        "title": "Configure MCP Server for this Workspace",
+        "category": "D365"
       }
     ],
     "configuration": {
