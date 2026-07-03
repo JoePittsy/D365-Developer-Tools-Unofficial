@@ -28,24 +28,20 @@ export function activate(context: vscode.ExtensionContext) {
         void vscode.commands.executeCommand('setContext', 'd365.connected', !!conn);
     });
 
-    // MCP bridge — lets Claude piggyback on the active connection for schema queries
+    // MCP bridge — lets Claude piggyback on the active connection for schema queries.
+    // The bridge itself just needs an active connection; the .mcp.json file that wires
+    // Claude Code up to it is only written when the user runs "D365: Configure MCP
+    // Server for this Workspace" — never automatically.
     const bridge = new McpBridge(connectionManager);
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
     connectionManager.onDidChangeConnection(conn => {
         if (conn) {
             bridge.start();
-            if (workspaceRoot) { ensureMcpJson(workspaceRoot, context.extensionPath); }
         } else {
             bridge.stop();
         }
     });
     context.subscriptions.push(bridge);
-
-    // Also check on activation (covers the case where .mcp.json was deleted and re-opened)
-    if (workspaceRoot) {
-        ensureMcpJson(workspaceRoot, context.extensionPath);
-    }
 
     // Silently restore the last connection for this workspace
     void connectionManager.tryRestoreConnection();
@@ -110,6 +106,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('d365.compareWebResource', (uri?: vscode.Uri) =>
             compareWebResource(uri, connectionManager, client, webResourceContentProvider),
         ),
+        vscode.commands.registerCommand('d365.configureMcp', () => configureMcpCommand(context.extensionPath)),
     );
 }
 
@@ -198,17 +195,41 @@ async function browseEntity(client: DataverseClient): Promise<void> {
     );
 }
 
-function ensureMcpJson(workspaceRoot: string, extensionPath: string): void {
-    if (!vscode.extensions.getExtension('anthropic.claude-code')) { return; }
+async function configureMcpCommand(extensionPath: string): Promise<void> {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+        vscode.window.showErrorMessage('D365: Open a workspace folder before configuring the MCP server.');
+        return;
+    }
 
-    const mcpJsonPath  = path.join(workspaceRoot, '.mcp.json');
     const serverJsPath = path.join(extensionPath, 'out', 'mcp-server.js');
+    if (!fs.existsSync(serverJsPath)) {
+        vscode.window.showErrorMessage('D365: MCP server bundle not found in this extension install.');
+        return;
+    }
 
-    if (fs.existsSync(mcpJsonPath)) { return; }
-    if (!fs.existsSync(serverJsPath)) { return; }
+    const mcpJsonPath = path.join(workspaceRoot, '.mcp.json');
+
+    let existing: Record<string, unknown> = {};
+    if (fs.existsSync(mcpJsonPath)) {
+        try {
+            existing = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8')) as Record<string, unknown>;
+        } catch {
+            vscode.window.showErrorMessage('D365: .mcp.json exists but is not valid JSON. Fix or remove it, then retry.');
+            return;
+        }
+
+        const servers = existing['mcpServers'] as Record<string, unknown> | undefined;
+        if (servers?.['d365']) {
+            vscode.window.showInformationMessage('D365: MCP server is already configured for this workspace.');
+            return;
+        }
+    }
 
     const config = {
+        ...existing,
         mcpServers: {
+            ...(existing['mcpServers'] as Record<string, unknown> | undefined),
             d365: {
                 command: 'node',
                 args: [serverJsPath],
@@ -219,7 +240,7 @@ function ensureMcpJson(workspaceRoot: string, extensionPath: string): void {
     fs.writeFileSync(mcpJsonPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
 
     vscode.window.showInformationMessage(
-        'D365: Created .mcp.json — restart Claude Code to enable Dataverse schema queries.',
+        'D365: Configured .mcp.json for this workspace — restart Claude Code to enable Dataverse schema queries.',
     );
 }
 
