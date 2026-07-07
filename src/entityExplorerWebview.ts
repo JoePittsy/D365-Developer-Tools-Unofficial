@@ -14,6 +14,7 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
     constructor(
         private readonly connectionManager: ConnectionManager,
         private readonly client: DataverseClient,
+        private readonly extensionUri: vscode.Uri,
     ) {
         connectionManager.onDidChangeConnection(conn => {
             this.post({ type: 'connectionState', connected: !!conn, restoring: false });
@@ -25,8 +26,14 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
 
     resolveWebviewView(view: vscode.WebviewView): void {
         this._view = view;
-        view.webview.options = { enableScripts: true, enableCommandUris: true };
-        view.webview.html = buildHtml();
+        view.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [
+                vscode.Uri.joinPath(this.extensionUri, 'out', 'webview'),
+                vscode.Uri.joinPath(this.extensionUri, 'resources'),
+            ],
+        };
+        view.webview.html = buildHtml(view.webview, this.extensionUri);
         view.webview.onDidReceiveMessage(async (msg: Record<string, unknown>) => {
             try {
                 await this.handleMessage(msg);
@@ -39,6 +46,12 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
     // ── Message handling ────────────────────────────────────────────────────
 
     private async handleMessage(msg: Record<string, unknown>): Promise<void> {
+        // Request/response RPC (attributes, icons, …) — see resolveRequest.
+        if (msg.kind === 'request') {
+            await this.handleRequest(msg as { id: number; op: string; params: Record<string, unknown> });
+            return;
+        }
+
         switch (msg.type) {
             case 'ready':
                 this.post({ type: 'connectionState', connected: this.connectionManager.isConnected, restoring: this.connectionManager.isRestoring });
@@ -46,12 +59,6 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
                 break;
             case 'connect':
                 await this.connectionManager.connect();
-                break;
-            case 'loadAttributes':
-                await this.sendAttributes(msg.entityLogicalName as string);
-                break;
-            case 'loadIcon':
-                await this.sendIcon(msg.key as string);
                 break;
             case 'showSolutionPicker':
                 await this.showSolutionPicker();
@@ -84,40 +91,51 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
         }
     }
 
-    // Resolves a table's SVG icon and posts its base64 content back to the webview. The key selects the
-    // source: 'wr:<name>' → an IconVectorName web resource (custom tables); 'otc:<code>' → the built-in
-    // /_imgs/svg_<otc>.svg icon (system tables). Failures fall back silently to the generic glyph.
-    private async sendIcon(key: string): Promise<void> {
-        if (!key) { return; }
+    // ── RPC (request/response) ──────────────────────────────────────────────
+    // The webview posts { kind: 'request', id, op, params } and awaits a matching
+    // { kind: 'response', id, ok, data|error }. Add a new data source by adding an op here.
 
-        if (this._iconCache.has(key)) {
-            const cached = this._iconCache.get(key);
-            if (cached) { this.post({ type: 'iconLoaded', key, content: cached }); }
-            return;
-        }
-
+    private async handleRequest(req: { id: number; op: string; params: Record<string, unknown> }): Promise<void> {
         try {
-            let content: string | undefined;
+            const data = await this.resolveRequest(req.op, req.params);
+            this.post({ kind: 'response', id: req.id, ok: true, data });
+        } catch (err) {
+            this.post({ kind: 'response', id: req.id, ok: false, error: errMsg(err) });
+        }
+    }
+
+    private resolveRequest(op: string, params: Record<string, unknown>): Promise<unknown> {
+        switch (op) {
+            case 'getAttributes':
+                return this.client.getAttributes(params.entityLogicalName as string);
+            case 'getIcon':
+                return this.getIconContent(params.key as string);
+            default:
+                throw new Error(`Unknown request op: ${op}`);
+        }
+    }
+
+    // Resolves a table's SVG icon to its base64 content, or null if it has none. The key selects
+    // the source: 'wr:<name>' → an IconVectorName web resource (custom tables); 'otc:<code>' → the
+    // built-in /_imgs/svg_<otc>.svg icon (system tables). Failures resolve to null (generic glyph),
+    // cached so we don't re-hit the API on repeated views.
+    private async getIconContent(key: string): Promise<string | null> {
+        if (!key) { return null; }
+        if (this._iconCache.has(key)) { return this._iconCache.get(key) ?? null; }
+
+        let content: string | undefined;
+        try {
             if (key.startsWith('wr:')) {
                 content = await this.client.getWebResourceContentByName(key.slice(3));
             } else if (key.startsWith('otc:')) {
                 const otc = Number(key.slice(4));
                 if (Number.isFinite(otc)) { content = await this.client.getSystemIconSvg(otc); }
             }
-            this._iconCache.set(key, content ?? null);
-            if (content) { this.post({ type: 'iconLoaded', key, content }); }
         } catch {
-            this._iconCache.set(key, null); // don't hammer the API on repeated views
+            content = undefined; // fall through and cache null
         }
-    }
-
-    private async sendAttributes(entityLogicalName: string): Promise<void> {
-        try {
-            const data = await this.client.getAttributes(entityLogicalName);
-            this.post({ type: 'attributes', entityLogicalName, data });
-        } catch (err) {
-            this.post({ type: 'attributesError', entityLogicalName, message: errMsg(err) });
-        }
+        this._iconCache.set(key, content ?? null);
+        return content ?? null;
     }
 
     async makeInterface(entityLogicalName: string, entityDisplayName: string): Promise<void> {
@@ -248,613 +266,40 @@ function errMsg(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
 }
 
-// ── HTML ────────────────────────────────────────────────────────────────────
 
-function buildHtml(): string {
-    const nonce = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+// ── HTML shell ───────────────────────────────────────────────────────────────
+// The UI is a React app bundled by esbuild into out/webview/. This shell only loads that
+// bundle and its stylesheet through webview resource URIs under a locked-down CSP; all
+// rendering and state now live in src/webview.
+
+function buildHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
+    const nonce = makeNonce();
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'out', 'webview', 'entityExplorer.js'));
+    const styleUri  = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'out', 'webview', 'entityExplorer.css'));
+
+    const csp = [
+        `default-src 'none'`,
+        `img-src ${webview.cspSource} data:`,
+        `font-src ${webview.cspSource} data:`,
+        `style-src ${webview.cspSource} 'unsafe-inline'`,
+        `script-src 'nonce-${nonce}'`,
+    ].join('; ');
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>
-  *, *::before, *::after { box-sizing: border-box; }
-
-  body {
-    margin: 0; padding: 0;
-    font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
-    color: var(--vscode-foreground);
-    overflow-x: hidden;
-  }
-
-  .toolbar {
-    position: sticky; top: 0; z-index: 10;
-    padding: 6px 8px;
-    display: flex; flex-direction: column; gap: 4px;
-    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
-    border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
-  }
-
-  .search-wrap { position: relative; display: flex; align-items: center; }
-  .search-icon { position: absolute; left: 7px; font-size: 11px; opacity: 0.5; pointer-events: none; }
-
-  input[type=text] {
-    width: 100%;
-    padding: 4px 8px 4px 24px;
-    background: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border, transparent);
-    outline: none;
-    font-family: inherit; font-size: inherit;
-  }
-  input[type=text]:focus {
-    border-color: var(--vscode-focusBorder);
-    outline: 1px solid var(--vscode-focusBorder);
-    outline-offset: -1px;
-  }
-  input[type=text]::placeholder { color: var(--vscode-input-placeholderForeground); }
-
-  .solution-row { display: flex; gap: 4px; }
-
-  .chip {
-    flex: 1; min-width: 0;
-    display: flex; align-items: center; gap: 5px;
-    padding: 3px 8px;
-    background: var(--vscode-button-secondaryBackground);
-    color: var(--vscode-button-secondaryForeground);
-    border: none; cursor: pointer;
-    font-family: inherit; font-size: inherit;
-    overflow: hidden; text-align: left;
-  }
-  .chip:hover { background: var(--vscode-button-secondaryHoverBackground); }
-  .chip.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-  .chip-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .chip-clear {
-    padding: 3px 8px;
-    background: var(--vscode-button-secondaryBackground);
-    color: var(--vscode-button-secondaryForeground);
-    border: none; cursor: pointer; font-size: 12px;
-    font-family: inherit;
-  }
-  .chip-clear:hover { background: var(--vscode-button-secondaryHoverBackground); }
-
-  .message {
-    padding: 12px 10px;
-    color: var(--vscode-descriptionForeground);
-    font-size: 12px;
-  }
-  .message.error { color: var(--vscode-errorForeground, #f44); }
-
-  .entity-header {
-    display: flex; align-items: center; gap: 5px;
-    padding: 3px 8px;
-    cursor: pointer; user-select: none;
-  }
-  .entity-header:hover { background: var(--vscode-list-hoverBackground); }
-  .entity-header.expanded { background: var(--vscode-list-inactiveSelectionBackground); }
-
-  .entity-icon-slot {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 14px; height: 14px; flex-shrink: 0;
-  }
-  .entity-icon-slot svg { width: 14px; height: 14px; display: block; }
-  /* Generic fallback glyph draws with currentColor: pure black on light themes, pure white on dark,
-     so it sits inline with the (inverted) real icons. */
-  svg.entity-icon { color: #000; }
-  body.vscode-dark svg.entity-icon,
-  body.vscode-high-contrast:not(.vscode-high-contrast-light) svg.entity-icon { color: #fff; }
-  /* Real table icons (custom + built-in) are drawn for light backgrounds, so invert them under a dark
-     theme to keep them legible. Left untouched on light themes; the generic glyph is excluded. */
-  body.vscode-dark .entity-icon-slot.real-icon svg,
-  body.vscode-high-contrast:not(.vscode-high-contrast-light) .entity-icon-slot.real-icon svg {
-    filter: invert(1);
-  }
-  .entity-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .entity-lname { font-size: 11px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
-
-  .attributes {
-    border-left: 2px solid var(--vscode-tree-indentGuidesStroke, var(--vscode-panel-border));
-    margin-left: 17px;
-  }
-
-  .attr-row {
-    display: flex; align-items: baseline; gap: 6px;
-    padding: 2px 8px 2px 6px;
-  }
-  .attr-row:hover { background: var(--vscode-list-hoverBackground); }
-
-  .attr-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-  .attr-lname { font-size: 11px; color: var(--vscode-descriptionForeground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
-  .pk-marker { font-size: 11px; flex-shrink: 0; opacity: 0.8; }
-
-  .type-badge {
-    flex-shrink: 0; font-size: 10px; padding: 0 4px; border-radius: 3px;
-    font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85;
-  }
-  .t-str  { background: #1e4a7a; color: #7bc8f6; }
-  .t-num  { background: #3d2e00; color: #e5c07b; }
-  .t-bool { background: #2d1f4e; color: #c678dd; }
-  .t-date { background: #1a3d2e; color: #98c379; }
-  .t-lkp  { background: #1a3d3d; color: #56b6c2; }
-  .t-opt  { background: #3d2600; color: #d19a66; }
-  .t-key  { background: #2d2d2d; color: #abb2bf; }
-  .t-def  { background: #2d2d2d; color: #abb2bf; }
-
-  #disconnected { padding: 16px 12px; text-align: center; }
-  #disconnected p { color: var(--vscode-descriptionForeground); margin: 0 0 12px; font-size: 12px; }
-  #connect-btn {
-    display: inline-block;
-    padding: 5px 14px;
-    background: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border: none; cursor: pointer;
-    font-family: inherit; font-size: inherit;
-    text-decoration: none;
-  }
-  #connect-btn:hover { background: var(--vscode-button-hoverBackground); }
-
-  #restoring { padding: 16px 12px; text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; }
-
-
-  .spinner {
-    display: inline-block; width: 10px; height: 10px;
-    border: 2px solid var(--vscode-descriptionForeground);
-    border-top-color: transparent; border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    vertical-align: middle; margin-right: 4px;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* ── Context menu ── */
-  #ctx-menu {
-    display: none; position: fixed; z-index: 1000;
-    background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
-    border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border));
-    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-    min-width: 160px; padding: 2px 0;
-  }
-  #ctx-menu button {
-    display: block; width: 100%;
-    padding: 6px 16px;
-    background: none; border: none;
-    color: var(--vscode-menu-foreground, var(--vscode-foreground));
-    text-align: left; cursor: pointer;
-    font-family: inherit; font-size: inherit;
-    white-space: nowrap;
-  }
-  #ctx-menu button:hover {
-    background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
-    color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
-  }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="${csp}">
+<link rel="stylesheet" href="${styleUri}">
 </head>
 <body>
-
-<div id="ctx-menu">
-  <button id="ctx-make-interface">Make Interface</button>
-  <button id="ctx-make-enum" style="display:none">Make Enum</button>
-</div>
-
-<div id="restoring" style="display:none">
-  <span class="spinner"></span>Connecting…
-</div>
-
-<div id="disconnected">
-  <p>Connect to a D365 environment to browse entities.</p>
-  <a href="command:d365.connect" id="connect-btn">Connect</a>
-</div>
-
-<div id="main" style="display:none">
-  <div class="toolbar">
-    <div class="search-wrap">
-      <span class="search-icon">⌕</span>
-      <input id="search" type="text" placeholder="Search entities…" />
-    </div>
-    <div class="solution-row">
-      <button class="chip" id="solution-btn">
-        <span class="chip-label" id="solution-label">All solutions</span>
-        <span>&#9662;</span>
-      </button>
-      <button class="chip-clear" id="solution-clear" style="display:none" title="Clear solution filter">&#x2715;</button>
-    </div>
-  </div>
-  <div id="entity-list"></div>
-</div>
-
-<script nonce="${nonce}">
-try {
-
-const vscode = acquireVsCodeApi();
-const post = (type, data) => vscode.postMessage(data ? { type, ...data } : { type });
-
-let entities   = [];
-let attrCache  = {};       // { [logicalName]: { data?, loading?, error? } }
-let expanded   = new Set();
-let searchFilter  = '';
-let solutionFilter = null; // { name, entityIds: Set<string> }
-
-// ── Extension → Webview messages ─────────────────────────────────────────────
-
-window.addEventListener('message', ({ data: m }) => {
-  switch (m.type) {
-    case 'connectionState': {
-      var show = function(id, visible) {
-        var el = document.getElementById(id);
-        if (el) { el.style.display = visible ? '' : 'none'; }
-      };
-      show('restoring',   !!m.restoring);
-      show('disconnected', !m.connected && !m.restoring);
-      show('main',        !!m.connected);
-      break;
-    }
-
-    case 'entitiesLoading':
-      document.getElementById('entity-list').innerHTML =
-        '<div class="message"><span class="spinner"></span>Loading entities…</div>';
-      break;
-
-    case 'entities':
-      entities = m.data;
-      attrCache = {}; expanded = new Set();
-      iconCache = {}; iconRequested = {};
-      renderList();
-      break;
-
-    case 'iconLoaded': {
-      iconCache[m.key] = decodeSvg(m.content);
-      var slots = document.querySelectorAll('.entity-icon-slot[data-icon="' + CSS.escape(m.key) + '"]');
-      slots.forEach(function (el) {
-        el.innerHTML = iconCache[m.key];
-        el.classList.add('real-icon');
-      });
-      break;
-    }
-
-    case 'entitiesError':
-      document.getElementById('entity-list').innerHTML =
-        '<div class="message error">' + esc(m.message) + '</div>';
-      break;
-
-    case 'attributes': {
-      attrCache[m.entityLogicalName] = { data: m.data };
-      const el = document.querySelector('[data-entity="' + CSS.escape(m.entityLogicalName) + '"] .attributes');
-      if (el) { el.innerHTML = renderAttrs(m.data); }
-      break;
-    }
-
-    case 'attributesError': {
-      attrCache[m.entityLogicalName] = { error: m.message };
-      const el = document.querySelector('[data-entity="' + CSS.escape(m.entityLogicalName) + '"] .attributes');
-      if (el) { el.innerHTML = '<div class="message error">' + esc(m.message) + '</div>'; }
-      break;
-    }
-
-    case 'solutionFilter':
-      solutionFilter = { name: m.name, entityIds: new Set(m.entityIds) };
-      document.getElementById('solution-label').textContent = m.name;
-      document.getElementById('solution-btn').classList.add('active');
-      document.getElementById('solution-clear').style.display = '';
-      renderList();
-      break;
-  }
-});
-
-// ── Static event listeners ────────────────────────────────────────────────────
-
-// connect and disconnect use command: URIs directly — no click handlers needed
-
-document.getElementById('search').addEventListener('input', function () {
-  searchFilter = this.value.trim().toLowerCase();
-  renderList();
-});
-
-document.getElementById('solution-btn').addEventListener('click', () => post('showSolutionPicker'));
-
-document.getElementById('solution-clear').addEventListener('click', function () {
-  solutionFilter = null;
-  document.getElementById('solution-label').textContent = 'All solutions';
-  document.getElementById('solution-btn').classList.remove('active');
-  this.style.display = 'none';
-  renderList();
-});
-
-// Event delegation for entity rows (handles dynamically rendered content)
-document.getElementById('entity-list').addEventListener('click', function (e) {
-  const header = e.target.closest('.entity-header');
-  if (!header) { return; }
-  const item = header.closest('[data-entity]');
-  if (item) { toggleEntity(item.getAttribute('data-entity')); }
-});
-
-// ── Rendering ─────────────────────────────────────────────────────────────────
-
-// Inline table glyph shown against each entity (replaces the old expand/collapse chevron).
-// currentColor picks up the theme foreground; expand state is conveyed by the header's background.
-var ENTITY_ICON =
-  '<svg class="entity-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">'
-  + '<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1" stroke="currentColor" stroke-width="1.1"/>'
-  + '<line x1="1.75" y1="6.25" x2="14.25" y2="6.25" stroke="currentColor" stroke-width="1.1"/>'
-  + '<line x1="6" y1="6.25" x2="6" y2="13.25" stroke="currentColor" stroke-width="1.1"/>'
-  + '<line x1="10" y1="6.25" x2="10" y2="13.25" stroke="currentColor" stroke-width="1.1"/>'
-  + '</svg>';
-
-// Real table icons (SVG web resources) keyed by IconVectorName → inline SVG markup once loaded.
-var iconCache     = {};
-var iconRequested = {};   // names we've already asked the extension for (dedupe)
-var iconObserver  = null;
-
-// Decode base64 web-resource content to SVG text and strip the XML prolog / DOCTYPE so it
-// inlines cleanly via innerHTML. Script execution inside it is blocked by the page CSP.
-function decodeSvg(b64) {
-  var bin = atob(b64);
-  var bytes = new Uint8Array(bin.length);
-  for (var i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }
-  var svg = new TextDecoder('utf-8').decode(bytes);
-  return svg.replace(/<\\?xml[\\s\\S]*?\\?>/i, '').replace(/<!DOCTYPE[\\s\\S]*?>/i, '').trim();
-}
-
-// A stable key identifying where this table's icon comes from:
-//   'wr:<name>'  → custom table's IconVectorName web resource
-//   'otc:<code>' → system table's built-in /_imgs/svg_<otc>.svg icon
-// null → nothing to fetch; show the generic glyph.
-function iconKey(e) {
-  if (e.iconVectorName)         { return 'wr:' + e.iconVectorName; }
-  if (e.objectTypeCode != null) { return 'otc:' + e.objectTypeCode; }
-  return null;
-}
-
-// Real icon markup if we have it cached, otherwise the generic glyph.
-function iconMarkup(key) {
-  if (key && iconCache[key]) { return iconCache[key]; }
-  return ENTITY_ICON;
-}
-
-function requestIcon(key) {
-  if (!key || iconCache[key] || iconRequested[key]) { return; }
-  iconRequested[key] = true;
-  post('loadIcon', { key: key });
-}
-
-// Lazily fetch icons only for rows scrolled into view, so a large table list
-// doesn't fire a request per row up front.
-function observeIcons() {
-  var slots = document.querySelectorAll('.entity-icon-slot[data-icon]');
-  if (!('IntersectionObserver' in window)) {
-    slots.forEach(function (el) { requestIcon(el.getAttribute('data-icon')); });
-    return;
-  }
-  if (iconObserver) {
-    iconObserver.disconnect(); // list was re-rendered; drop stale observations
-  } else {
-    iconObserver = new IntersectionObserver(function (entries) {
-      entries.forEach(function (en) {
-        if (!en.isIntersecting) { return; }
-        iconObserver.unobserve(en.target);
-        requestIcon(en.target.getAttribute('data-icon'));
-      });
-    }, { rootMargin: '120px' });
-  }
-  slots.forEach(function (el) {
-    if (!iconCache[el.getAttribute('data-icon')]) { iconObserver.observe(el); }
-  });
-}
-
-function renderList() {
-  const filtered = getFiltered();
-  const list = document.getElementById('entity-list');
-
-  if (!filtered.length) {
-    list.innerHTML = '<div class="message">No entities match the current filters.</div>';
-    return;
-  }
-
-  list.innerHTML = filtered.map(function (e) {
-    const isExp   = expanded.has(e.logicalName);
-    const cached  = attrCache[e.logicalName];
-    const key     = iconKey(e);
-    let attrsHtml = '';
-    if (isExp) {
-      attrsHtml = '<div class="attributes">' + (
-        !cached          ? '<div class="message"><span class="spinner"></span>Loading…</div>' :
-        cached.error     ? '<div class="message error">' + esc(cached.error) + '</div>' :
-                           renderAttrs(cached.data)
-      ) + '</div>';
-    }
-    return '<div data-entity="' + esc(e.logicalName) + '">'
-      + '<div class="entity-header' + (isExp ? ' expanded' : '') + '">'
-      + '<span class="entity-icon-slot' + (iconCache[key] ? ' real-icon' : '') + '"' + (key ? ' data-icon="' + esc(key) + '"' : '') + '>' + iconMarkup(key) + '</span>'
-      + '<span class="entity-name">' + esc(e.displayName || e.logicalName) + '</span>'
-      + '<span class="entity-lname">' + esc(e.logicalName) + '</span>'
-      + '</div>'
-      + attrsHtml
-      + '</div>';
-  }).join('');
-
-  observeIcons();
-}
-
-function renderAttrs(attrs) {
-  if (!attrs || !attrs.length) { return '<div class="message">No attributes found.</div>'; }
-  return attrs.map(function (a) {
-    const marker = a.isPrimaryId   ? '<span class="pk-marker" title="Primary ID">⚿</span>'
-                 : a.isPrimaryName ? '<span class="pk-marker" title="Primary Name">✎</span>'
-                 : '';
-    return '<div class="attr-row" data-attr="' + esc(a.logicalName) + '" data-type="' + esc(a.attributeType) + '" data-display="' + esc(a.displayName || a.logicalName) + '">'
-      + marker
-      + '<span class="attr-name">'  + esc(a.displayName || a.logicalName) + '</span>'
-      + '<span class="attr-lname">' + esc(a.logicalName)                  + '</span>'
-      + '<span class="type-badge '  + typeClass(a.attributeType) + '">'   + esc(shortType(a.attributeType)) + '</span>'
-      + '</div>';
-  }).join('');
-}
-
-function toggleEntity(logicalName) {
-  const item = document.querySelector('[data-entity="' + CSS.escape(logicalName) + '"]');
-  if (!item) { return; }
-
-  if (expanded.has(logicalName)) {
-    expanded.delete(logicalName);
-    item.querySelector('.entity-header').classList.remove('expanded');
-    var attrs = item.querySelector('.attributes');
-    if (attrs) { attrs.remove(); }
-  } else {
-    expanded.add(logicalName);
-    item.querySelector('.entity-header').classList.add('expanded');
-
-    var div = document.createElement('div');
-    div.className = 'attributes';
-    var cached = attrCache[logicalName];
-    if (!cached) {
-      div.innerHTML = '<div class="message"><span class="spinner"></span>Loading…</div>';
-      attrCache[logicalName] = { loading: true };
-      post('loadAttributes', { entityLogicalName: logicalName });
-    } else if (cached.error) {
-      div.innerHTML = '<div class="message error">' + esc(cached.error) + '</div>';
-    } else {
-      div.innerHTML = renderAttrs(cached.data);
-    }
-    item.appendChild(div);
-  }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function getFiltered() {
-  var result = entities;
-  if (searchFilter) {
-    result = result.filter(function (e) {
-      return e.logicalName.indexOf(searchFilter) !== -1 ||
-             e.displayName.toLowerCase().indexOf(searchFilter) !== -1;
-    });
-  }
-  if (solutionFilter) {
-    result = result.filter(function (e) { return solutionFilter.entityIds.has(e.metadataId); });
-  }
-  return result;
-}
-
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function shortType(t) {
-  var map = {
-    String:'str', Memo:'str', Integer:'int', BigInt:'int',
-    Double:'dec', Decimal:'dec', Boolean:'bool', DateTime:'date',
-    Money:'$', Lookup:'lkp', Customer:'lkp', Owner:'lkp',
-    Picklist:'opt', State:'state', Status:'status',
-    Uniqueidentifier:'uid', EntityName:'ent', Virtual:'virt'
-  };
-  return map[t] || t;
-}
-
-function typeClass(t) {
-  if (t === 'String' || t === 'Memo' || t === 'EntityName') { return 't-str'; }
-  if (t === 'Integer' || t === 'BigInt' || t === 'Double' || t === 'Decimal') { return 't-num'; }
-  if (t === 'Boolean')  { return 't-bool'; }
-  if (t === 'DateTime') { return 't-date'; }
-  if (t === 'Lookup' || t === 'Customer' || t === 'Owner') { return 't-lkp'; }
-  if (t === 'Picklist' || t === 'State' || t === 'Status') { return 't-opt'; }
-  if (t === 'Uniqueidentifier') { return 't-key'; }
-  return 't-def';
-}
-
-// ── Context menu ──────────────────────────────────────────────────────────────
-
-var OPTION_SET_TYPES = new Set(['Picklist', 'State', 'Status']);
-
-var ctxLogicalName      = null;
-var ctxDisplayName      = null;
-var ctxAttrLogicalName  = null;
-var ctxAttrDisplayName  = null;
-var ctxAttrType         = null;
-
-document.getElementById('entity-list').addEventListener('contextmenu', function (e) {
-  var header  = e.target.closest('.entity-header');
-  var attrRow = e.target.closest('.attr-row[data-attr]');
-
-  if (header) {
-    e.preventDefault();
-    var item = header.closest('[data-entity]');
-    if (!item) { return; }
-    ctxLogicalName = item.getAttribute('data-entity');
-    ctxDisplayName = item.querySelector('.entity-name').textContent || ctxLogicalName;
-    ctxAttrLogicalName = null;
-    document.getElementById('ctx-make-interface').style.display = '';
-    document.getElementById('ctx-make-enum').style.display      = 'none';
-    showCtx(e.clientX, e.clientY);
-  } else if (attrRow) {
-    var attrType = attrRow.getAttribute('data-type');
-    if (!OPTION_SET_TYPES.has(attrType)) { return; }
-    e.preventDefault();
-    var entityItem = attrRow.closest('[data-entity]');
-    if (!entityItem) { return; }
-    ctxLogicalName     = entityItem.getAttribute('data-entity');
-    ctxAttrLogicalName = attrRow.getAttribute('data-attr');
-    ctxAttrDisplayName = attrRow.getAttribute('data-display');
-    ctxAttrType        = attrType;
-    document.getElementById('ctx-make-interface').style.display = 'none';
-    document.getElementById('ctx-make-enum').style.display      = '';
-    showCtx(e.clientX, e.clientY);
-  } else {
-    hideCtx();
-  }
-});
-
-document.getElementById('ctx-make-interface').addEventListener('click', function () {
-  var logicalName = ctxLogicalName;
-  var displayName = ctxDisplayName;
-  hideCtx();
-  if (logicalName) {
-    post('makeInterface', { entityLogicalName: logicalName, entityDisplayName: displayName });
-  }
-});
-
-document.getElementById('ctx-make-enum').addEventListener('click', function () {
-  var entityLogicalName    = ctxLogicalName;
-  var attributeLogicalName = ctxAttrLogicalName;
-  var attributeDisplayName = ctxAttrDisplayName;
-  var attributeType        = ctxAttrType;
-  hideCtx();
-  if (entityLogicalName && attributeLogicalName) {
-    post('makeEnum', { entityLogicalName, attributeLogicalName, attributeDisplayName, attributeType });
-  }
-});
-
-document.addEventListener('click',   hideCtx);
-document.addEventListener('scroll',  hideCtx, true);
-document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { hideCtx(); } });
-
-function showCtx(x, y) {
-  var menu = document.getElementById('ctx-menu');
-  menu.style.display = 'block';
-  menu.style.left = x + 'px';
-  menu.style.top  = y + 'px';
-  var r = menu.getBoundingClientRect();
-  if (r.right  > window.innerWidth)  { menu.style.left = (x - r.width)  + 'px'; }
-  if (r.bottom > window.innerHeight) { menu.style.top  = (y - r.height) + 'px'; }
-}
-
-function hideCtx() {
-  document.getElementById('ctx-menu').style.display = 'none';
-  ctxLogicalName     = null;
-  ctxDisplayName     = null;
-  ctxAttrLogicalName = null;
-  ctxAttrDisplayName = null;
-  ctxAttrType        = null;
-}
-
-post('ready');
-
-} catch (e) {
-  document.body.innerHTML = '<div style="padding:12px;color:#f44;font-size:12px;white-space:pre-wrap">Webview script error:\\n' + (e && e.message || String(e)) + '</div>';
-}
-</script>
+<div id="root"></div>
+<script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;
+}
+
+function makeNonce(): string {
+    return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 }

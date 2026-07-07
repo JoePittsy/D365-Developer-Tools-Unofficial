@@ -66,6 +66,9 @@ function makeClient(): FakeClient {
 
 type MessageHandler = (msg: Record<string, unknown>) => Promise<void> | void;
 
+// Stand-in for context.extensionUri passed to the provider.
+const EXT_URI = vscodeMock.Uri.file('/ext');
+
 function makeView() {
     let handler: MessageHandler | undefined;
     const postMessage = sinon.stub();
@@ -73,6 +76,8 @@ function makeView() {
         webview: {
             options: undefined as unknown,
             html: '',
+            cspSource: 'vscode-webview://test',
+            asWebviewUri: (uri: vscodeMock.Uri) => uri,
             postMessage,
             onDidReceiveMessage: (cb: MessageHandler) => { handler = cb; return new vscodeMock.Disposable(); },
         },
@@ -97,7 +102,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const { cm, emitter } = makeConnectionManager();
             const { client, getEntities } = makeClient();
             getEntities.resolves([]);
-            new EntityExplorerWebviewProvider(cm, client);
+            new EntityExplorerWebviewProvider(cm, client, EXT_URI);
 
             assert.doesNotThrow(() => emitter.fire(fakeConnection()));
             await flush();
@@ -107,7 +112,7 @@ describe('EntityExplorerWebviewProvider', () => {
         it('does not reload entities when the connection is cleared (undefined)', async () => {
             const { cm, emitter } = makeConnectionManager();
             const { client, getEntities } = makeClient();
-            new EntityExplorerWebviewProvider(cm, client);
+            new EntityExplorerWebviewProvider(cm, client, EXT_URI);
 
             emitter.fire(undefined);
             await flush();
@@ -118,7 +123,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const { cm, emitter } = makeConnectionManager();
             const { client, getEntities } = makeClient();
             getEntities.resolves([{ metadataId: '1', logicalName: 'account', schemaName: 'Account', displayName: 'Account', isCustom: false }] as EntityDefinition[]);
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             const { view, postMessage } = makeView();
             provider.resolveWebviewView(view as any);
 
@@ -135,7 +140,7 @@ describe('EntityExplorerWebviewProvider', () => {
         it('posts connectionState with connected:false and does not load entities when the connection is cleared', () => {
             const { cm, emitter } = makeConnectionManager();
             const { client, getEntities } = makeClient();
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             const { view, postMessage } = makeView();
             provider.resolveWebviewView(view as any);
 
@@ -149,17 +154,20 @@ describe('EntityExplorerWebviewProvider', () => {
     // ── resolveWebviewView ───────────────────────────────────────────────────
 
     describe('resolveWebviewView', () => {
-        it('enables scripts/command uris, sets non-empty html, and registers a message handler', () => {
+        it('enables scripts, scopes local resource roots, sets non-empty html, and registers a message handler', () => {
             const { cm } = makeConnectionManager();
             const { client } = makeClient();
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             const { view, getHandler } = makeView();
 
             provider.resolveWebviewView(view as any);
 
-            assert.deepStrictEqual(view.webview.options, { enableScripts: true, enableCommandUris: true });
+            const options = view.webview.options as { enableScripts: boolean; localResourceRoots: unknown[] };
+            assert.strictEqual(options.enableScripts, true);
+            assert.strictEqual(options.localResourceRoots.length, 2);
             assert.ok(view.webview.html.includes('<!DOCTYPE'));
             assert.ok(view.webview.html.includes('<html'));
+            assert.ok(view.webview.html.includes('entityExplorer.js'), 'loads the bundled React app');
             assert.strictEqual(typeof getHandler(), 'function');
         });
     });
@@ -170,7 +178,7 @@ describe('EntityExplorerWebviewProvider', () => {
         function setup(connState: Partial<{ isConnected: boolean; isRestoring: boolean }> = {}) {
             const connMgr = makeConnectionManager(connState);
             const clientFake = makeClient();
-            const provider = new EntityExplorerWebviewProvider(connMgr.cm, clientFake.client);
+            const provider = new EntityExplorerWebviewProvider(connMgr.cm, clientFake.client, EXT_URI);
             const viewFake = makeView();
             provider.resolveWebviewView(viewFake.view as any);
             return { provider, ...connMgr, ...clientFake, ...viewFake };
@@ -212,24 +220,32 @@ describe('EntityExplorerWebviewProvider', () => {
             assert.strictEqual(connect.callCount, 1);
         });
 
-        it("'loadAttributes' posts attributes on success", async () => {
+        it("RPC 'getAttributes' resolves with a matching-id response on success", async () => {
             const { getHandler, postMessage, getAttributes } = setup();
             const attrs = [attr({ logicalName: 'name' })];
             getAttributes.resolves(attrs);
 
-            await getHandler()({ type: 'loadAttributes', entityLogicalName: 'account' });
+            await getHandler()({ kind: 'request', id: 7, op: 'getAttributes', params: { entityLogicalName: 'account' } });
 
             assert.ok(getAttributes.calledWith('account'));
-            assert.ok(postMessage.calledWith({ type: 'attributes', entityLogicalName: 'account', data: attrs }));
+            assert.ok(postMessage.calledWith({ kind: 'response', id: 7, ok: true, data: attrs }));
         });
 
-        it("'loadAttributes' posts attributesError on rejection", async () => {
+        it("RPC 'getAttributes' resolves with an error response on rejection", async () => {
             const { getHandler, postMessage, getAttributes } = setup();
             getAttributes.rejects(new Error('nope'));
 
-            await getHandler()({ type: 'loadAttributes', entityLogicalName: 'account' });
+            await getHandler()({ kind: 'request', id: 8, op: 'getAttributes', params: { entityLogicalName: 'account' } });
 
-            assert.ok(postMessage.calledWith({ type: 'attributesError', entityLogicalName: 'account', message: 'nope' }));
+            assert.ok(postMessage.calledWith({ kind: 'response', id: 8, ok: false, error: 'nope' }));
+        });
+
+        it("RPC responds with an error for an unknown op", async () => {
+            const { getHandler, postMessage } = setup();
+
+            await getHandler()({ kind: 'request', id: 9, op: 'bogusOp', params: {} });
+
+            assert.ok(postMessage.calledWithMatch({ kind: 'response', id: 9, ok: false }));
         });
 
         it("'showSolutionPicker' loads solutions, shows a quick pick, and posts solutionFilter on selection", async () => {
@@ -330,7 +346,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const openTextDocument = sinon.spy(vscodeMock.workspace, 'openTextDocument');
             const showTextDocument = sinon.stub(vscodeMock.window, 'showTextDocument').resolves(undefined);
 
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             await provider.makeInterface('account', 'Account');
 
             assert.ok(getAttributes.calledWith('account'));
@@ -353,7 +369,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const showError = sinon.stub(vscodeMock.window, 'showErrorMessage').resolves(undefined);
             const quickPick = sinon.stub(vscodeMock.window, 'showQuickPick');
 
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             await provider.makeInterface('account', 'Account');
 
             assert.ok(showError.calledWithMatch(/Failed to load fields: fields-down/));
@@ -367,7 +383,7 @@ describe('EntityExplorerWebviewProvider', () => {
             sinon.stub(vscodeMock.window, 'showQuickPick').resolves(undefined);
             const openTextDocument = sinon.spy(vscodeMock.workspace, 'openTextDocument');
 
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             await provider.makeInterface('account', 'Account');
 
             assert.strictEqual(openTextDocument.callCount, 0);
@@ -381,7 +397,7 @@ describe('EntityExplorerWebviewProvider', () => {
             sinon.stub(vscodeMock.window, 'showQuickPick').resolves([]);
             const openTextDocument = sinon.spy(vscodeMock.workspace, 'openTextDocument');
 
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             await provider.makeInterface('account', 'Account');
 
             assert.strictEqual(openTextDocument.callCount, 0);
@@ -396,7 +412,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const showError = sinon.stub(vscodeMock.window, 'showErrorMessage').resolves(undefined);
             const openTextDocument = sinon.spy(vscodeMock.workspace, 'openTextDocument');
 
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             await provider.makeInterface('account', 'Account');
 
             assert.ok(showError.calledWithMatch(/Failed to load option sets: options-down/));
@@ -414,7 +430,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const openTextDocument = sinon.spy(vscodeMock.workspace, 'openTextDocument');
             const showTextDocument = sinon.stub(vscodeMock.window, 'showTextDocument').resolves(undefined);
 
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             await provider.makeEnum('account', 'statuscode', 'Status Reason', 'Status');
 
             assert.ok(getAttributeOptions.calledWith('account', 'statuscode', 'Status'));
@@ -433,7 +449,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const showError = sinon.stub(vscodeMock.window, 'showErrorMessage').resolves(undefined);
             const openTextDocument = sinon.spy(vscodeMock.workspace, 'openTextDocument');
 
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             await provider.makeEnum('account', 'statuscode', 'Status Reason', 'Status');
 
             assert.ok(showError.calledWithMatch(/Failed to load option set: options-down/));
@@ -448,7 +464,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const { cm } = makeConnectionManager();
             const { client, getEntities } = makeClient();
             getEntities.resolves([{ metadataId: '1', logicalName: 'account', schemaName: 'Account', displayName: 'Account', isCustom: false }]);
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             const { view, postMessage } = makeView();
             provider.resolveWebviewView(view as any);
 
@@ -463,7 +479,7 @@ describe('EntityExplorerWebviewProvider', () => {
             const { cm } = makeConnectionManager();
             const { client, getEntities } = makeClient();
             getEntities.rejects(new Error('down'));
-            const provider = new EntityExplorerWebviewProvider(cm, client);
+            const provider = new EntityExplorerWebviewProvider(cm, client, EXT_URI);
             const { view, postMessage } = makeView();
             provider.resolveWebviewView(view as any);
 

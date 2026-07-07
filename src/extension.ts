@@ -19,7 +19,7 @@ import {
 export function activate(context: vscode.ExtensionContext) {
     const connectionManager = new ConnectionManager(context);
     const client = new DataverseClient(connectionManager);
-    const explorerProvider = new EntityExplorerWebviewProvider(connectionManager, client);
+    const explorerProvider = new EntityExplorerWebviewProvider(connectionManager, client, context.extensionUri);
     const statusBar = new D365StatusBar(connectionManager);
     context.subscriptions.push(statusBar);
 
