@@ -2,7 +2,6 @@ import { useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { AttributeInfo, EntityInfo } from '../protocol';
 import type { ExtensionState } from '../hooks/useExtensionState';
-import { iconKey } from '../helpers';
 import { LoadingMessage } from './Spinner';
 import { EntityRow } from './EntityRow';
 import type { ContextTarget } from './ContextMenu';
@@ -10,12 +9,11 @@ import type { ContextTarget } from './ContextMenu';
 interface Props {
   state: ExtensionState;
   entities: EntityInfo[];
-  requestIcon: (key: string) => void;
   onToggle: (logicalName: string) => void;
   onOpenContextMenu: (target: ContextTarget, x: number, y: number) => void;
 }
 
-export function EntityList({ state, entities, requestIcon, onToggle, onOpenContextMenu }: Props) {
+export function EntityList({ state, entities, onToggle, onOpenContextMenu }: Props) {
   const parentRef = useRef<HTMLDivElement>(null);
 
   // Window the list so large orgs (1000s of tables) stay smooth. Rows have variable height
@@ -66,7 +64,6 @@ export function EntityList({ state, entities, requestIcon, onToggle, onOpenConte
       <div id="entity-list" style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
         {virtualizer.getVirtualItems().map(vi => {
           const e = entities[vi.index];
-          const key = iconKey(e);
           return (
             <div
               key={e.logicalName}
@@ -77,9 +74,6 @@ export function EntityList({ state, entities, requestIcon, onToggle, onOpenConte
               <EntityRow
                 entity={e}
                 isExpanded={state.expanded.has(e.logicalName)}
-                attrEntry={state.attrCache[e.logicalName]}
-                iconSvg={key ? state.iconCache[key] : undefined}
-                requestIcon={requestIcon}
                 onToggle={onToggle}
                 onEntityContextMenu={onEntityContextMenu}
                 onAttrContextMenu={onAttrContextMenu(e.logicalName)}

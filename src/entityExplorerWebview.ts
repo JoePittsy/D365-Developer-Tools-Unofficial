@@ -46,6 +46,12 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
     // ── Message handling ────────────────────────────────────────────────────
 
     private async handleMessage(msg: Record<string, unknown>): Promise<void> {
+        // Request/response RPC (attributes, icons, …) — see resolveRequest.
+        if (msg.kind === 'request') {
+            await this.handleRequest(msg as { id: number; op: string; params: Record<string, unknown> });
+            return;
+        }
+
         switch (msg.type) {
             case 'ready':
                 this.post({ type: 'connectionState', connected: this.connectionManager.isConnected, restoring: this.connectionManager.isRestoring });
@@ -53,12 +59,6 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
                 break;
             case 'connect':
                 await this.connectionManager.connect();
-                break;
-            case 'loadAttributes':
-                await this.sendAttributes(msg.entityLogicalName as string);
-                break;
-            case 'loadIcon':
-                await this.sendIcon(msg.key as string);
                 break;
             case 'showSolutionPicker':
                 await this.showSolutionPicker();
@@ -91,40 +91,51 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
         }
     }
 
-    // Resolves a table's SVG icon and posts its base64 content back to the webview. The key selects the
-    // source: 'wr:<name>' → an IconVectorName web resource (custom tables); 'otc:<code>' → the built-in
-    // /_imgs/svg_<otc>.svg icon (system tables). Failures fall back silently to the generic glyph.
-    private async sendIcon(key: string): Promise<void> {
-        if (!key) { return; }
+    // ── RPC (request/response) ──────────────────────────────────────────────
+    // The webview posts { kind: 'request', id, op, params } and awaits a matching
+    // { kind: 'response', id, ok, data|error }. Add a new data source by adding an op here.
 
-        if (this._iconCache.has(key)) {
-            const cached = this._iconCache.get(key);
-            if (cached) { this.post({ type: 'iconLoaded', key, content: cached }); }
-            return;
-        }
-
+    private async handleRequest(req: { id: number; op: string; params: Record<string, unknown> }): Promise<void> {
         try {
-            let content: string | undefined;
+            const data = await this.resolveRequest(req.op, req.params);
+            this.post({ kind: 'response', id: req.id, ok: true, data });
+        } catch (err) {
+            this.post({ kind: 'response', id: req.id, ok: false, error: errMsg(err) });
+        }
+    }
+
+    private resolveRequest(op: string, params: Record<string, unknown>): Promise<unknown> {
+        switch (op) {
+            case 'getAttributes':
+                return this.client.getAttributes(params.entityLogicalName as string);
+            case 'getIcon':
+                return this.getIconContent(params.key as string);
+            default:
+                throw new Error(`Unknown request op: ${op}`);
+        }
+    }
+
+    // Resolves a table's SVG icon to its base64 content, or null if it has none. The key selects
+    // the source: 'wr:<name>' → an IconVectorName web resource (custom tables); 'otc:<code>' → the
+    // built-in /_imgs/svg_<otc>.svg icon (system tables). Failures resolve to null (generic glyph),
+    // cached so we don't re-hit the API on repeated views.
+    private async getIconContent(key: string): Promise<string | null> {
+        if (!key) { return null; }
+        if (this._iconCache.has(key)) { return this._iconCache.get(key) ?? null; }
+
+        let content: string | undefined;
+        try {
             if (key.startsWith('wr:')) {
                 content = await this.client.getWebResourceContentByName(key.slice(3));
             } else if (key.startsWith('otc:')) {
                 const otc = Number(key.slice(4));
                 if (Number.isFinite(otc)) { content = await this.client.getSystemIconSvg(otc); }
             }
-            this._iconCache.set(key, content ?? null);
-            if (content) { this.post({ type: 'iconLoaded', key, content }); }
         } catch {
-            this._iconCache.set(key, null); // don't hammer the API on repeated views
+            content = undefined; // fall through and cache null
         }
-    }
-
-    private async sendAttributes(entityLogicalName: string): Promise<void> {
-        try {
-            const data = await this.client.getAttributes(entityLogicalName);
-            this.post({ type: 'attributes', entityLogicalName, data });
-        } catch (err) {
-            this.post({ type: 'attributesError', entityLogicalName, message: errMsg(err) });
-        }
+        this._iconCache.set(key, content ?? null);
+        return content ?? null;
     }
 
     async makeInterface(entityLogicalName: string, entityDisplayName: string): Promise<void> {

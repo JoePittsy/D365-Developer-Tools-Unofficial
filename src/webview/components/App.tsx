@@ -57,7 +57,6 @@ export function App() {
       <EntityList
         state={state}
         entities={filtered}
-        requestIcon={api.requestIcon}
         onToggle={api.toggleEntity}
         onOpenContextMenu={(target, x, y) => setCtx({ target, x, y })}
       />

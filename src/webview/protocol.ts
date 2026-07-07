@@ -1,6 +1,12 @@
 // Message protocol between the extension host (entityExplorerWebview.ts) and this webview.
 // Kept webview-local (a subset of the extension's domain types) so the webview tsconfig
 // doesn't have to resolve the extension's Node/`vscode` imports.
+//
+// Two channels share the postMessage transport:
+//   1. Events (fire-and-forget, often extension-initiated push): InboundMessage / OutboundMessage.
+//   2. Request/response RPC (webview-initiated pull): RpcRequest / RpcResponse — see rpc.ts.
+//      Pull-shaped, cacheable data (attributes, icons, future relationships) goes over RPC and
+//      is managed by TanStack Query; genuinely event-shaped state stays on the reducer.
 
 export interface EntityInfo {
   metadataId: string;
@@ -20,23 +26,18 @@ export interface AttributeInfo {
   isPrimaryName: boolean;
 }
 
-// ── Extension → Webview ───────────────────────────────────────────────────────
+// ── Events: Extension → Webview ───────────────────────────────────────────────
 export type InboundMessage =
   | { type: 'connectionState'; connected: boolean; restoring: boolean }
   | { type: 'entitiesLoading' }
   | { type: 'entities'; data: EntityInfo[] }
-  | { type: 'iconLoaded'; key: string; content: string }
   | { type: 'entitiesError'; message: string }
-  | { type: 'attributes'; entityLogicalName: string; data: AttributeInfo[] }
-  | { type: 'attributesError'; entityLogicalName: string; message: string }
   | { type: 'solutionFilter'; name: string; entityIds: string[] };
 
-// ── Webview → Extension ───────────────────────────────────────────────────────
+// ── Events: Webview → Extension ───────────────────────────────────────────────
 export type OutboundMessage =
   | { type: 'ready' }
   | { type: 'connect' }
-  | { type: 'loadAttributes'; entityLogicalName: string }
-  | { type: 'loadIcon'; key: string }
   | { type: 'showSolutionPicker' }
   | { type: 'makeInterface'; entityLogicalName: string; entityDisplayName: string }
   | {
@@ -46,3 +47,23 @@ export type OutboundMessage =
       attributeDisplayName: string;
       attributeType: string;
     };
+
+// ── RPC: request/response over the same transport ─────────────────────────────
+// Adding a new data source (e.g. relationships) = one new op here + one handler case in
+// the extension + one useQuery in the webview. No transport changes.
+export interface RpcRequestMap {
+  getAttributes: { params: { entityLogicalName: string }; result: AttributeInfo[] };
+  /** Returns base64 SVG content, or null when the table has no resolvable icon. */
+  getIcon: { params: { key: string }; result: string | null };
+}
+export type RpcOp = keyof RpcRequestMap;
+
+export interface RpcRequest {
+  kind: 'request';
+  id: number;
+  op: RpcOp;
+  params: unknown;
+}
+export type RpcResponse =
+  | { kind: 'response'; id: number; ok: true; data: unknown }
+  | { kind: 'response'; id: number; ok: false; error: string };

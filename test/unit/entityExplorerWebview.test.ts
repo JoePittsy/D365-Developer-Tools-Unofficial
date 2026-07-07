@@ -220,24 +220,32 @@ describe('EntityExplorerWebviewProvider', () => {
             assert.strictEqual(connect.callCount, 1);
         });
 
-        it("'loadAttributes' posts attributes on success", async () => {
+        it("RPC 'getAttributes' resolves with a matching-id response on success", async () => {
             const { getHandler, postMessage, getAttributes } = setup();
             const attrs = [attr({ logicalName: 'name' })];
             getAttributes.resolves(attrs);
 
-            await getHandler()({ type: 'loadAttributes', entityLogicalName: 'account' });
+            await getHandler()({ kind: 'request', id: 7, op: 'getAttributes', params: { entityLogicalName: 'account' } });
 
             assert.ok(getAttributes.calledWith('account'));
-            assert.ok(postMessage.calledWith({ type: 'attributes', entityLogicalName: 'account', data: attrs }));
+            assert.ok(postMessage.calledWith({ kind: 'response', id: 7, ok: true, data: attrs }));
         });
 
-        it("'loadAttributes' posts attributesError on rejection", async () => {
+        it("RPC 'getAttributes' resolves with an error response on rejection", async () => {
             const { getHandler, postMessage, getAttributes } = setup();
             getAttributes.rejects(new Error('nope'));
 
-            await getHandler()({ type: 'loadAttributes', entityLogicalName: 'account' });
+            await getHandler()({ kind: 'request', id: 8, op: 'getAttributes', params: { entityLogicalName: 'account' } });
 
-            assert.ok(postMessage.calledWith({ type: 'attributesError', entityLogicalName: 'account', message: 'nope' }));
+            assert.ok(postMessage.calledWith({ kind: 'response', id: 8, ok: false, error: 'nope' }));
+        });
+
+        it("RPC responds with an error for an unknown op", async () => {
+            const { getHandler, postMessage } = setup();
+
+            await getHandler()({ kind: 'request', id: 9, op: 'bogusOp', params: {} });
+
+            assert.ok(postMessage.calledWithMatch({ kind: 'response', id: 9, ok: false }));
         });
 
         it("'showSolutionPicker' loads solutions, shows a quick pick, and posts solutionFilter on selection", async () => {
