@@ -8,6 +8,9 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
 
     private _view: vscode.WebviewView | undefined;
 
+    // Caches base64 SVG content by web resource name. `null` = looked up, none found (don't retry).
+    private readonly _iconCache = new Map<string, string | null>();
+
     constructor(
         private readonly connectionManager: ConnectionManager,
         private readonly client: DataverseClient,
@@ -47,6 +50,9 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
             case 'loadAttributes':
                 await this.sendAttributes(msg.entityLogicalName as string);
                 break;
+            case 'loadIcon':
+                await this.sendIcon(msg.key as string);
+                break;
             case 'showSolutionPicker':
                 await this.showSolutionPicker();
                 break;
@@ -69,11 +75,39 @@ export class EntityExplorerWebviewProvider implements vscode.WebviewViewProvider
 
     private async sendEntities(): Promise<void> {
         this.post({ type: 'entitiesLoading' });
+        this._iconCache.clear(); // icons may differ across environments; refetch on demand
         try {
             const data = await this.client.getEntities();
             this.post({ type: 'entities', data });
         } catch (err) {
             this.post({ type: 'entitiesError', message: errMsg(err) });
+        }
+    }
+
+    // Resolves a table's SVG icon and posts its base64 content back to the webview. The key selects the
+    // source: 'wr:<name>' → an IconVectorName web resource (custom tables); 'otc:<code>' → the built-in
+    // /_imgs/svg_<otc>.svg icon (system tables). Failures fall back silently to the generic glyph.
+    private async sendIcon(key: string): Promise<void> {
+        if (!key) { return; }
+
+        if (this._iconCache.has(key)) {
+            const cached = this._iconCache.get(key);
+            if (cached) { this.post({ type: 'iconLoaded', key, content: cached }); }
+            return;
+        }
+
+        try {
+            let content: string | undefined;
+            if (key.startsWith('wr:')) {
+                content = await this.client.getWebResourceContentByName(key.slice(3));
+            } else if (key.startsWith('otc:')) {
+                const otc = Number(key.slice(4));
+                if (Number.isFinite(otc)) { content = await this.client.getSystemIconSvg(otc); }
+            }
+            this._iconCache.set(key, content ?? null);
+            if (content) { this.post({ type: 'iconLoaded', key, content }); }
+        } catch {
+            this._iconCache.set(key, null); // don't hammer the API on repeated views
         }
     }
 
@@ -295,14 +329,29 @@ function buildHtml(): string {
   .message.error { color: var(--vscode-errorForeground, #f44); }
 
   .entity-header {
-    display: flex; align-items: baseline; gap: 5px;
+    display: flex; align-items: center; gap: 5px;
     padding: 3px 8px;
     cursor: pointer; user-select: none;
   }
   .entity-header:hover { background: var(--vscode-list-hoverBackground); }
   .entity-header.expanded { background: var(--vscode-list-inactiveSelectionBackground); }
 
-  .chevron { font-size: 9px; width: 10px; flex-shrink: 0; opacity: 0.7; }
+  .entity-icon-slot {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; flex-shrink: 0;
+  }
+  .entity-icon-slot svg { width: 14px; height: 14px; display: block; }
+  /* Generic fallback glyph draws with currentColor: pure black on light themes, pure white on dark,
+     so it sits inline with the (inverted) real icons. */
+  svg.entity-icon { color: #000; }
+  body.vscode-dark svg.entity-icon,
+  body.vscode-high-contrast:not(.vscode-high-contrast-light) svg.entity-icon { color: #fff; }
+  /* Real table icons (custom + built-in) are drawn for light backgrounds, so invert them under a dark
+     theme to keep them legible. Left untouched on light themes; the generic glyph is excluded. */
+  body.vscode-dark .entity-icon-slot.real-icon svg,
+  body.vscode-high-contrast:not(.vscode-high-contrast-light) .entity-icon-slot.real-icon svg {
+    filter: invert(1);
+  }
   .entity-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .entity-lname { font-size: 11px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
 
@@ -450,8 +499,19 @@ window.addEventListener('message', ({ data: m }) => {
     case 'entities':
       entities = m.data;
       attrCache = {}; expanded = new Set();
+      iconCache = {}; iconRequested = {};
       renderList();
       break;
+
+    case 'iconLoaded': {
+      iconCache[m.key] = decodeSvg(m.content);
+      var slots = document.querySelectorAll('.entity-icon-slot[data-icon="' + CSS.escape(m.key) + '"]');
+      slots.forEach(function (el) {
+        el.innerHTML = iconCache[m.key];
+        el.classList.add('real-icon');
+      });
+      break;
+    }
 
     case 'entitiesError':
       document.getElementById('entity-list').innerHTML =
@@ -511,6 +571,77 @@ document.getElementById('entity-list').addEventListener('click', function (e) {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
+// Inline table glyph shown against each entity (replaces the old expand/collapse chevron).
+// currentColor picks up the theme foreground; expand state is conveyed by the header's background.
+var ENTITY_ICON =
+  '<svg class="entity-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">'
+  + '<rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1" stroke="currentColor" stroke-width="1.1"/>'
+  + '<line x1="1.75" y1="6.25" x2="14.25" y2="6.25" stroke="currentColor" stroke-width="1.1"/>'
+  + '<line x1="6" y1="6.25" x2="6" y2="13.25" stroke="currentColor" stroke-width="1.1"/>'
+  + '<line x1="10" y1="6.25" x2="10" y2="13.25" stroke="currentColor" stroke-width="1.1"/>'
+  + '</svg>';
+
+// Real table icons (SVG web resources) keyed by IconVectorName → inline SVG markup once loaded.
+var iconCache     = {};
+var iconRequested = {};   // names we've already asked the extension for (dedupe)
+var iconObserver  = null;
+
+// Decode base64 web-resource content to SVG text and strip the XML prolog / DOCTYPE so it
+// inlines cleanly via innerHTML. Script execution inside it is blocked by the page CSP.
+function decodeSvg(b64) {
+  var bin = atob(b64);
+  var bytes = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }
+  var svg = new TextDecoder('utf-8').decode(bytes);
+  return svg.replace(/<\\?xml[\\s\\S]*?\\?>/i, '').replace(/<!DOCTYPE[\\s\\S]*?>/i, '').trim();
+}
+
+// A stable key identifying where this table's icon comes from:
+//   'wr:<name>'  → custom table's IconVectorName web resource
+//   'otc:<code>' → system table's built-in /_imgs/svg_<otc>.svg icon
+// null → nothing to fetch; show the generic glyph.
+function iconKey(e) {
+  if (e.iconVectorName)         { return 'wr:' + e.iconVectorName; }
+  if (e.objectTypeCode != null) { return 'otc:' + e.objectTypeCode; }
+  return null;
+}
+
+// Real icon markup if we have it cached, otherwise the generic glyph.
+function iconMarkup(key) {
+  if (key && iconCache[key]) { return iconCache[key]; }
+  return ENTITY_ICON;
+}
+
+function requestIcon(key) {
+  if (!key || iconCache[key] || iconRequested[key]) { return; }
+  iconRequested[key] = true;
+  post('loadIcon', { key: key });
+}
+
+// Lazily fetch icons only for rows scrolled into view, so a large table list
+// doesn't fire a request per row up front.
+function observeIcons() {
+  var slots = document.querySelectorAll('.entity-icon-slot[data-icon]');
+  if (!('IntersectionObserver' in window)) {
+    slots.forEach(function (el) { requestIcon(el.getAttribute('data-icon')); });
+    return;
+  }
+  if (iconObserver) {
+    iconObserver.disconnect(); // list was re-rendered; drop stale observations
+  } else {
+    iconObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) { return; }
+        iconObserver.unobserve(en.target);
+        requestIcon(en.target.getAttribute('data-icon'));
+      });
+    }, { rootMargin: '120px' });
+  }
+  slots.forEach(function (el) {
+    if (!iconCache[el.getAttribute('data-icon')]) { iconObserver.observe(el); }
+  });
+}
+
 function renderList() {
   const filtered = getFiltered();
   const list = document.getElementById('entity-list');
@@ -523,6 +654,7 @@ function renderList() {
   list.innerHTML = filtered.map(function (e) {
     const isExp   = expanded.has(e.logicalName);
     const cached  = attrCache[e.logicalName];
+    const key     = iconKey(e);
     let attrsHtml = '';
     if (isExp) {
       attrsHtml = '<div class="attributes">' + (
@@ -533,13 +665,15 @@ function renderList() {
     }
     return '<div data-entity="' + esc(e.logicalName) + '">'
       + '<div class="entity-header' + (isExp ? ' expanded' : '') + '">'
-      + '<span class="chevron">' + (isExp ? '&#9660;' : '&#9658;') + '</span>'
+      + '<span class="entity-icon-slot' + (iconCache[key] ? ' real-icon' : '') + '"' + (key ? ' data-icon="' + esc(key) + '"' : '') + '>' + iconMarkup(key) + '</span>'
       + '<span class="entity-name">' + esc(e.displayName || e.logicalName) + '</span>'
       + '<span class="entity-lname">' + esc(e.logicalName) + '</span>'
       + '</div>'
       + attrsHtml
       + '</div>';
   }).join('');
+
+  observeIcons();
 }
 
 function renderAttrs(attrs) {
@@ -563,13 +697,11 @@ function toggleEntity(logicalName) {
 
   if (expanded.has(logicalName)) {
     expanded.delete(logicalName);
-    item.querySelector('.chevron').innerHTML = '&#9658;';
     item.querySelector('.entity-header').classList.remove('expanded');
     var attrs = item.querySelector('.attributes');
     if (attrs) { attrs.remove(); }
   } else {
     expanded.add(logicalName);
-    item.querySelector('.chevron').innerHTML = '&#9660;';
     item.querySelector('.entity-header').classList.add('expanded');
 
     var div = document.createElement('div');
