@@ -1,4 +1,3 @@
-import { VSCodeTextField } from '@vscode/webview-ui-toolkit/react';
 import type { SolutionFilter } from '../hooks/useExtensionState';
 
 interface Props {
@@ -12,18 +11,17 @@ interface Props {
 export function Toolbar({ search, onSearchChange, solutionFilter, onPickSolution, onClearSolution }: Props) {
   return (
     <div className="toolbar">
-      <VSCodeTextField
-        className="search-field"
-        placeholder="Search entities…"
-        value={search}
-        onInput={e => onSearchChange((e.target as HTMLInputElement).value)}
-      >
-        <span slot="start" className="search-icon">⌕</span>
-      </VSCodeTextField>
+      <div className="search-wrap">
+        <span className="search-icon">⌕</span>
+        <input
+          type="text"
+          placeholder="Search entities…"
+          value={search}
+          onChange={e => onSearchChange(e.target.value)}
+        />
+      </div>
 
       <div className="solution-row">
-        {/* Native button — the toolkit button's shadow DOM can't host a full-width, left-aligned,
-            truncating label, so this is styled directly with VS Code theme variables. */}
         <button
           type="button"
           className={'chip' + (solutionFilter ? ' active' : '')}

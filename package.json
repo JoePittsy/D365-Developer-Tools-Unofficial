@@ -244,6 +244,7 @@
     "publish:pre-release": "vsce publish --pre-release"
   },
   "devDependencies": {
+    "@tanstack/react-virtual": "^3.14.5",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.43",
     "@types/react": "^18.3.31",
@@ -255,7 +256,6 @@
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.0",
     "@vscode/vsce": "^2.32.0",
-    "@vscode/webview-ui-toolkit": "^1.4.0",
     "concurrently": "^10.0.3",
     "esbuild": "^0.28.1",
     "eslint": "^9.0.0",

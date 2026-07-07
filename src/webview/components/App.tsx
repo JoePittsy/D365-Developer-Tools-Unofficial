@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { VSCodeButton } from '@vscode/webview-ui-toolkit/react';
 import { useExtensionState } from '../hooks/useExtensionState';
 import { Spinner } from './Spinner';
 import { Toolbar } from './Toolbar';
@@ -41,7 +40,7 @@ export function App() {
     return (
       <div id="disconnected">
         <p>Connect to a D365 environment to browse entities.</p>
-        <VSCodeButton onClick={api.connect}>Connect</VSCodeButton>
+        <button type="button" id="connect-btn" onClick={api.connect}>Connect</button>
       </div>
     );
   }

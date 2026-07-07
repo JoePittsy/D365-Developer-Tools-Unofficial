@@ -1,8 +1,6 @@
-import { VSCodeProgressRing } from '@vscode/webview-ui-toolkit/react';
-
-// Small inline loading indicator, matching the old `.spinner` sizing.
+// Small inline loading indicator (CSS keyframe spinner — no external dependency).
 export function Spinner() {
-  return <VSCodeProgressRing className="inline-ring" />;
+  return <span className="spinner" />;
 }
 
 export function LoadingMessage({ label }: { label: string }) {
