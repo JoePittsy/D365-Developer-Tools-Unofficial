@@ -18,6 +18,8 @@ interface EntityDefinitionResponse {
     SchemaName: string;
     DisplayName: DataverseLabel;
     IsCustomEntity: boolean;
+    IconVectorName: string | null;
+    ObjectTypeCode: number | null;
 }
 
 interface AttributeDefinitionResponse {
@@ -62,6 +64,10 @@ export interface EntityDefinition {
     schemaName: string;
     displayName: string;
     isCustom: boolean;
+    /** Logical name of the SVG web resource used as this table's Unified Interface icon, if any. */
+    iconVectorName?: string;
+    /** Numeric entity type code — used to resolve the built-in /_imgs/svg_<otc>.svg icon for system tables. */
+    objectTypeCode?: number;
 }
 
 export interface AttributeDefinition {
@@ -92,7 +98,7 @@ export class DataverseClient {
     async getEntities(): Promise<EntityDefinition[]> {
         const url = this.apiUrl(
             'EntityDefinitions',
-            '$select=MetadataId,LogicalName,SchemaName,DisplayName,IsCustomEntity',
+            '$select=MetadataId,LogicalName,SchemaName,DisplayName,IsCustomEntity,IconVectorName,ObjectTypeCode',
         );
 
         const raw = await this.fetchPaged<EntityDefinitionResponse>(url);
@@ -102,6 +108,8 @@ export class DataverseClient {
             schemaName: e.SchemaName,
             displayName: extractLabel(e.DisplayName) || e.SchemaName,
             isCustom: e.IsCustomEntity,
+            iconVectorName: e.IconVectorName || undefined,
+            objectTypeCode: typeof e.ObjectTypeCode === 'number' ? e.ObjectTypeCode : undefined,
         })).sort((a, b) => a.logicalName.localeCompare(b.logicalName));
     }
 
@@ -195,6 +203,39 @@ export class DataverseClient {
         const url = this.apiUrl(`webresourceset(${webResourceId})`, '$select=content');
         const data = await this.request<{ content: string }>(url);
         return data?.content ?? '';
+    }
+
+    // Returns the base64-encoded content of a web resource looked up by its unique name,
+    // or undefined if no such web resource exists. Used to resolve table icons (IconVectorName).
+    async getWebResourceContentByName(name: string): Promise<string | undefined> {
+        const escaped = name.replace(/'/g, "''");
+        const url = this.apiUrl(
+            'webresourceset',
+            '$select=content',
+            `$filter=name eq '${escaped}'`,
+        );
+
+        const data = await this.request<ODataResponse<{ content: string }>>(url);
+        return data?.value[0]?.content || undefined;
+    }
+
+    // Fetches a system table's built-in icon from the legacy /_imgs/svg_<otc>.svg path and returns it
+    // base64-encoded (to match the web-resource icon path). Returns undefined when there's no SVG there —
+    // most environments 404 or serve a non-SVG response for codes without a built-in icon.
+    async getSystemIconSvg(objectTypeCode: number): Promise<string | undefined> {
+        const base  = this.connectionManager.connection!.environmentUrl;
+        const token = await this.connectionManager.getAccessToken();
+
+        const response = await fetch(`${base}/_imgs/svg_${objectTypeCode}.svg`, {
+            headers: { Authorization: `Bearer ${token}`, Accept: 'image/svg+xml' },
+        });
+        if (!response.ok) { return undefined; }
+
+        // Guard against a 200 sign-in/error HTML page being returned instead of the icon.
+        const svg = await response.text();
+        if (!/<svg[\s>]/i.test(svg)) { return undefined; }
+
+        return Buffer.from(svg, 'utf8').toString('base64');
     }
 
     async createWebResource(params: { name: string; displayName: string; type: number; contentBase64: string }): Promise<string> {

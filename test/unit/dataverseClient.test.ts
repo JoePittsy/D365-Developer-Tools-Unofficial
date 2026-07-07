@@ -71,7 +71,7 @@ describe('DataverseClient', () => {
             const [url] = fetchStub.firstCall.args;
             assert.strictEqual(
                 url,
-                `${ENV_URL}/api/data/v9.2/EntityDefinitions?$select=MetadataId,LogicalName,SchemaName,DisplayName,IsCustomEntity`,
+                `${ENV_URL}/api/data/v9.2/EntityDefinitions?$select=MetadataId,LogicalName,SchemaName,DisplayName,IsCustomEntity,IconVectorName,ObjectTypeCode`,
             );
         });
 
