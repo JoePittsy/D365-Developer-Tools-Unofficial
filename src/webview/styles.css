@@ -1,0 +1,201 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  overflow-x: hidden;
+}
+
+/* ── Toolbar ── */
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+}
+
+.search-field { width: 100%; }
+.search-icon { opacity: 0.6; font-size: 12px; }
+
+.solution-row { display: flex; gap: 4px; }
+
+/* The solution chip + clear are native buttons styled with VS Code theme variables — full
+   layout control (full-width, left-aligned label, ellipsis) that the toolkit button can't give. */
+.chip {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  overflow: hidden;
+  text-align: left;
+}
+.chip:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.chip.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.chip-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.chip-clear {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.chip-clear:hover { background: var(--vscode-button-secondaryHoverBackground); }
+
+/* ── Messages ── */
+.message {
+  padding: 12px 10px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+}
+.message.error { color: var(--vscode-errorForeground, #f44); }
+.loading-message { display: flex; align-items: center; gap: 6px; }
+
+/* ── Entity rows ── */
+.entity-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.entity-header:hover { background: var(--vscode-list-hoverBackground); }
+.entity-header.expanded { background: var(--vscode-list-inactiveSelectionBackground); }
+
+.entity-icon-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.entity-icon-slot svg { width: 14px; height: 14px; display: block; }
+
+/* Generic fallback glyph draws with currentColor: black on light themes, white on dark,
+   so it sits inline with the (inverted) real icons. */
+svg.entity-icon { color: #000; }
+body.vscode-dark svg.entity-icon,
+body.vscode-high-contrast:not(.vscode-high-contrast-light) svg.entity-icon { color: #fff; }
+
+/* Real table icons are drawn for light backgrounds, so invert them under a dark theme to
+   keep them legible. Left untouched on light themes; the generic glyph is excluded. */
+body.vscode-dark .entity-icon-slot.real-icon svg,
+body.vscode-high-contrast:not(.vscode-high-contrast-light) .entity-icon-slot.real-icon svg {
+  filter: invert(1);
+}
+
+.entity-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entity-lname { font-size: 11px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+
+/* ── Attributes ── */
+.attributes {
+  border-left: 2px solid var(--vscode-tree-indentGuidesStroke, var(--vscode-panel-border));
+  margin-left: 17px;
+}
+
+.attr-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px 2px 6px;
+}
+.attr-row:hover { background: var(--vscode-list-hoverBackground); }
+
+.attr-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.attr-lname {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
+.pk-marker { font-size: 11px; flex-shrink: 0; opacity: 0.8; }
+
+.type-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  opacity: 0.85;
+}
+.t-str  { background: #1e4a7a; color: #7bc8f6; }
+.t-num  { background: #3d2e00; color: #e5c07b; }
+.t-bool { background: #2d1f4e; color: #c678dd; }
+.t-date { background: #1a3d2e; color: #98c379; }
+.t-lkp  { background: #1a3d3d; color: #56b6c2; }
+.t-opt  { background: #3d2600; color: #d19a66; }
+.t-key  { background: #2d2d2d; color: #abb2bf; }
+.t-def  { background: #2d2d2d; color: #abb2bf; }
+
+/* ── Connect / restoring states ── */
+#disconnected { padding: 16px 12px; text-align: center; }
+#disconnected p { color: var(--vscode-descriptionForeground); margin: 0 0 12px; font-size: 12px; }
+
+#restoring {
+  padding: 16px 12px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* Toolkit progress ring, sized to sit inline like the old CSS spinner. */
+.inline-ring {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* ── Context menu ── */
+#ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  min-width: 160px;
+  padding: 2px 0;
+}
+#ctx-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 16px;
+  background: none;
+  border: none;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  white-space: nowrap;
+}
+#ctx-menu button:hover {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-menu-selectionForeground, var(--vscode-foreground));
+}
