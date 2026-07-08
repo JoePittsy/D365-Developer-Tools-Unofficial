@@ -244,9 +244,47 @@ async function configureMcpCommand(extensionPath: string): Promise<void> {
         return;
     }
 
+    await ensureGitignoreEntry(workspaceRoot, '.mcp.json');
+
     vscode.window.showInformationMessage(
         'D365: Configured .mcp.json for this workspace — restart Claude Code to enable Dataverse schema queries.',
     );
+}
+
+async function ensureGitignoreEntry(workspaceRoot: string, entry: string): Promise<void> {
+    const gitignorePath = path.join(workspaceRoot, '.gitignore');
+
+    if (!fs.existsSync(gitignorePath)) {
+        const choice = await vscode.window.showInformationMessage(
+            `D365: No .gitignore found in this workspace. Create one and ignore ${entry}?`,
+            { modal: true },
+            'Yes',
+            'No',
+        );
+        if (choice !== 'Yes') {
+            return;
+        }
+
+        try {
+            fs.writeFileSync(gitignorePath, `${entry}\n`, 'utf8');
+        } catch {
+            // Best-effort: failure to create .gitignore shouldn't block MCP configuration.
+        }
+        return;
+    }
+
+    try {
+        const contents = fs.readFileSync(gitignorePath, 'utf8');
+        const alreadyIgnored = contents.split(/\r?\n/).some((line) => line.trim() === entry);
+        if (alreadyIgnored) {
+            return;
+        }
+
+        const separator = contents.length === 0 || contents.endsWith('\n') ? '' : '\n';
+        fs.writeFileSync(gitignorePath, `${contents}${separator}${entry}\n`, 'utf8');
+    } catch {
+        // Best-effort: failure to update .gitignore shouldn't block MCP configuration.
+    }
 }
 
 function errorMessage(err: unknown): string {

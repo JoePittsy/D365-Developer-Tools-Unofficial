@@ -224,6 +224,73 @@ describe('extension.activate', () => {
 
             fs.rmSync(wsRoot, { recursive: true, force: true });
         });
+
+        it('appends .mcp.json to an existing .gitignore that does not already ignore it', async () => {
+            fs.mkdirSync(path.join(tmpDir, 'out'), { recursive: true });
+            fs.writeFileSync(path.join(tmpDir, 'out', 'mcp-server.js'), '// stub');
+            const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'd365-ws-'));
+            fs.writeFileSync(path.join(wsRoot, '.gitignore'), 'node_modules/\nout/\n');
+            vscodeMock.workspace.workspaceFolders = [{ uri: vscodeMock.Uri.file(wsRoot), name: 'ws', index: 0 }];
+            const handler = await getHandler(tmpDir);
+            sinon.stub(vscodeMock.window, 'showInformationMessage').resolves(undefined);
+
+            await handler();
+
+            const gitignore = fs.readFileSync(path.join(wsRoot, '.gitignore'), 'utf8');
+            assert.ok(gitignore.split(/\r?\n/).includes('.mcp.json'));
+
+            fs.rmSync(wsRoot, { recursive: true, force: true });
+        });
+
+        it('does not duplicate the .gitignore entry if .mcp.json is already ignored', async () => {
+            fs.mkdirSync(path.join(tmpDir, 'out'), { recursive: true });
+            fs.writeFileSync(path.join(tmpDir, 'out', 'mcp-server.js'), '// stub');
+            const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'd365-ws-'));
+            fs.writeFileSync(path.join(wsRoot, '.gitignore'), 'node_modules/\n.mcp.json\n');
+            vscodeMock.workspace.workspaceFolders = [{ uri: vscodeMock.Uri.file(wsRoot), name: 'ws', index: 0 }];
+            const handler = await getHandler(tmpDir);
+            sinon.stub(vscodeMock.window, 'showInformationMessage').resolves(undefined);
+
+            await handler();
+
+            const gitignore = fs.readFileSync(path.join(wsRoot, '.gitignore'), 'utf8');
+            const occurrences = gitignore.split(/\r?\n/).filter((line) => line === '.mcp.json').length;
+            assert.strictEqual(occurrences, 1);
+
+            fs.rmSync(wsRoot, { recursive: true, force: true });
+        });
+
+        it('prompts to create a .gitignore when none exists, and does not create one if declined', async () => {
+            fs.mkdirSync(path.join(tmpDir, 'out'), { recursive: true });
+            fs.writeFileSync(path.join(tmpDir, 'out', 'mcp-server.js'), '// stub');
+            const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'd365-ws-'));
+            vscodeMock.workspace.workspaceFolders = [{ uri: vscodeMock.Uri.file(wsRoot), name: 'ws', index: 0 }];
+            const handler = await getHandler(tmpDir);
+            const infoStub = sinon.stub(vscodeMock.window, 'showInformationMessage').resolves('No' as any);
+
+            await handler();
+
+            assert.ok(infoStub.calledWithMatch(/No \.gitignore found/, { modal: true }, 'Yes', 'No'));
+            assert.ok(!fs.existsSync(path.join(wsRoot, '.gitignore')));
+
+            fs.rmSync(wsRoot, { recursive: true, force: true });
+        });
+
+        it('creates a .gitignore with the entry when the user accepts the prompt', async () => {
+            fs.mkdirSync(path.join(tmpDir, 'out'), { recursive: true });
+            fs.writeFileSync(path.join(tmpDir, 'out', 'mcp-server.js'), '// stub');
+            const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'd365-ws-'));
+            vscodeMock.workspace.workspaceFolders = [{ uri: vscodeMock.Uri.file(wsRoot), name: 'ws', index: 0 }];
+            const handler = await getHandler(tmpDir);
+            sinon.stub(vscodeMock.window, 'showInformationMessage').resolves('Yes' as any);
+
+            await handler();
+
+            const gitignore = fs.readFileSync(path.join(wsRoot, '.gitignore'), 'utf8');
+            assert.strictEqual(gitignore, '.mcp.json\n');
+
+            fs.rmSync(wsRoot, { recursive: true, force: true });
+        });
     });
 
     describe('d365.generateInterface / d365.browseEntity', () => {
